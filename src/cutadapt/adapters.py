@@ -1561,6 +1561,122 @@ class IndexedPrefixAdapters(Matchable):
         pass
 
 
+def _count_leading_ns(seq: str) -> int:
+    i = 0
+    while i < len(seq) and seq[i] == "N":
+        i += 1
+    return i
+
+
+class NPrefixIndexedAdapters(Matchable):
+    """
+    Fast index for groups of anchored 5' adapters whose sequence is
+    ``N{k}<body>`` where ``k`` N wildcards (typically a fixed-length UMI)
+    are followed by an ACGT-only body.
+
+    The current cutadapt path for ``^NNNNNN<probe>`` uses per-adapter DP
+    because ``AdapterIndex`` rejects wildcards. This class skips the N
+    prefix at match time: it builds a standard ``AdapterIndex`` over the
+    **bare bodies** and, for each read, does one anchored lookup at
+    offset ``k``. Match objects returned use the ORIGINAL adapter and
+    report ``rstart=0``, ``rstop=k + len(body)``, preserving the semantics
+    of the slow DP path (N positions count as matches against any read
+    base; errors are counted within the body).
+
+    Notes on semantics:
+    - All adapters in the group must share the same N-prefix length.
+    - ``indels`` flows through to ``AdapterIndex`` internals (which supports
+      up to 3 errors with indels via ``edit_environment``).
+    - Indels that shift the UMI/body junction (e.g. a sequencing indel in
+      the UMI region that makes the probe start at offset ``k-1`` or
+      ``k+1``) are NOT recovered. That matches the semantics of the
+      existing ``^N{k}`` DP path which also uses a fixed prefix length.
+    """
+
+    @classmethod
+    def is_acceptable(cls, adapter) -> bool:
+        if not isinstance(adapter, PrefixAdapter):
+            return False
+        seq = adapter.sequence
+        n_prefix = _count_leading_ns(seq)
+        if n_prefix == 0:
+            return False  # handled by AdapterIndex directly
+        body = seq[n_prefix:]
+        if not body or not set(body) <= set("ACGT"):
+            return False
+        if adapter.read_wildcards:
+            return False
+        k = int(adapter.max_error_rate * len(seq))
+        if k > 3:
+            return False
+        return True
+
+    def __init__(self, adapters: Sequence["PrefixAdapter"], n_prefix: int):
+        super().__init__(name="n_prefix_indexed_adapters")
+        if not adapters:
+            raise ValueError("Adapter list is empty")
+        if n_prefix <= 0:
+            raise ValueError("n_prefix must be >= 1")
+        self._original_adapters: List["PrefixAdapter"] = list(adapters)
+        self._n_prefix: int = n_prefix
+        body_adapters: List["PrefixAdapter"] = []
+        self._body_to_original: Dict[int, "PrefixAdapter"] = {}
+        for a in adapters:
+            body = a.sequence[n_prefix:]
+            if not body:
+                raise ValueError(
+                    f"Adapter {a.name!r} has only N wildcards and no body"
+                )
+            if not set(body) <= set("ACGT"):
+                raise ValueError(
+                    f"Adapter {a.name!r} body {body!r} is not pure ACGT"
+                )
+            # Apply the error rate to the body length (N positions always match
+            # and would not consume error budget in practice). This avoids the
+            # edit-environment blow-up when ``int(rate * full_length)`` lands
+            # on 3 while body-level rate rounds to 2.
+            body_adapter = PrefixAdapter(
+                sequence=body,
+                max_errors=a.max_error_rate,
+                read_wildcards=a.read_wildcards,
+                adapter_wildcards=False,
+                indels=a.indels,
+                name=a.name,
+            )
+            body_adapters.append(body_adapter)
+            self._body_to_original[id(body_adapter)] = a
+        self._index = AdapterIndex(body_adapters, prefix=True)
+        logger.info(
+            "Built N-prefix-skip index over %d adapters (n_prefix=%d)",
+            len(adapters), n_prefix,
+        )
+
+    def enable_debug(self):
+        for a in self._original_adapters:
+            a.enable_debug()
+
+    def __len__(self):
+        return len(self._original_adapters)
+
+    def __getitem__(self, item):
+        return self._original_adapters[item]
+
+    def match_to(self, sequence: str):
+        k = self._n_prefix
+        if len(sequence) < k + 1:
+            return None
+        # Fast path: use the body index to narrow down the adapter candidate.
+        body_match = self._index.match_to(sequence[k:])
+        if body_match is None:
+            return None
+        # Delegate the final match (and scoring) to the original adapter's
+        # DP path so semantics are bit-identical to the non-indexed
+        # ``^N{k}<body>`` alignment. This single DP call replaces the full
+        # 542-deep MultipleAdapters iteration.
+        original = self._body_to_original[id(body_match.adapter)]
+        return original.match_to(sequence)
+
+
 class IndexedSuffixAdapters(Matchable):
     def __init__(self, adapters):
         super().__init__(name="indexed_suffix_adapters")
