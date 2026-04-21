@@ -1571,6 +1571,140 @@ class IndexedSuffixAdapters(Matchable):
         pass
 
 
+class SeedMultiAdapterFilter(Matchable):
+    """
+    Seed-and-extend pre-filter for matching many non-anchored 5' or 3'
+    adapters against a read.
+
+    An inverted index maps fixed-length seeds (k-mers drawn from each adapter
+    sequence) to the list of adapters that contain that seed. For every read,
+    only the adapters that share at least one seed with the read become
+    candidates; each candidate then goes through its normal ``match_to``
+    (k-mer pre-filter + DP alignment via ``Aligner``). Matching semantics
+    (indels, errors, scoring, min_overlap) are therefore identical to the
+    non-indexed ``MultipleAdapters`` path.
+
+    Correctness (q-gram lemma, Jokinen & Ukkonen 1991):
+    if an adapter of length L matches a substring of the read with edit
+    distance e, then there exists at least one exact k-mer with
+    k <= floor(l_min / (e+1)) that appears in both the adapter and the
+    matched substring. ``l_min`` is the minimum guaranteed matched part,
+    which is ``min_overlap`` for non-anchored 5'/3' adapters. Taking the
+    minimum such k over all adapters in the group yields a seed size that
+    gives no false negatives vs. the non-indexed path.
+    """
+
+    MIN_SEED_SIZE = 3
+    MAX_SEED_SIZE = 15
+
+    @classmethod
+    def is_acceptable(cls, adapter) -> bool:
+        # Only plain non-anchored 5' / 3' adapters. Anchored (Prefix/Suffix)
+        # already have AdapterIndex. Rightmost / NonInternal / force_anywhere
+        # variants have different search semantics.
+        if type(adapter) is not FrontAdapter and type(adapter) is not BackAdapter:
+            return False
+        if getattr(adapter, "_force_anywhere", False):
+            return False
+        if adapter.adapter_wildcards or adapter.read_wildcards:
+            return False
+        if len(adapter.sequence) < cls.MIN_SEED_SIZE:
+            return False
+        return True
+
+    @classmethod
+    def _compute_seed_size(cls, adapters) -> int:
+        seed = cls.MAX_SEED_SIZE
+        for a in adapters:
+            k_max = int(a.max_error_rate * len(a.sequence))
+            l_min = min(a.min_overlap, len(a.sequence))
+            if l_min < cls.MIN_SEED_SIZE:
+                return cls.MIN_SEED_SIZE
+            s = l_min // (k_max + 1)
+            if s < seed:
+                seed = s
+        return max(cls.MIN_SEED_SIZE, min(cls.MAX_SEED_SIZE, seed))
+
+    def __init__(self, adapters: Sequence["SingleAdapter"]):
+        super().__init__(name="seed_multi_adapter_filter")
+        if not adapters:
+            raise ValueError("Adapter list is empty")
+        for a in adapters:
+            if not self.is_acceptable(a):
+                raise ValueError(
+                    f"Adapter {a!r} is not acceptable for SeedMultiAdapterFilter"
+                )
+        self._adapters: List[SingleAdapter] = list(adapters)
+        self._seed_size: int = self._compute_seed_size(adapters)
+        self._seed_index: Dict[str, Tuple[int, ...]] = self._build_index()
+        logger.info(
+            "Built seed index over %d adapters (seed size %d, %d distinct seeds)",
+            len(self._adapters),
+            self._seed_size,
+            len(self._seed_index),
+        )
+
+    def _build_index(self) -> Dict[str, Tuple[int, ...]]:
+        k = self._seed_size
+        seeds: Dict[str, List[int]] = {}
+        for idx, a in enumerate(self._adapters):
+            seq = a.sequence
+            if len(seq) < k:
+                continue
+            seen: set = set()
+            for i in range(len(seq) - k + 1):
+                kmer = seq[i : i + k]
+                if kmer in seen:
+                    continue
+                seen.add(kmer)
+                seeds.setdefault(kmer, []).append(idx)
+        return {k_: tuple(v) for k_, v in seeds.items()}
+
+    def enable_debug(self):
+        for a in self._adapters:
+            a.enable_debug()
+
+    def __len__(self):
+        return len(self._adapters)
+
+    def __getitem__(self, item):
+        return self._adapters[item]
+
+    def match_to(self, sequence: str):
+        k = self._seed_size
+        if len(sequence) < k:
+            return None
+        seed_index = self._seed_index
+        n = len(self._adapters)
+        seen = bytearray(n)
+        stop = len(sequence) - k + 1
+        # Union of candidate adapters whose seeds occur anywhere in the read
+        for i in range(stop):
+            hit = seed_index.get(sequence[i : i + k])
+            if hit is None:
+                continue
+            for idx in hit:
+                seen[idx] = 1
+        best_match = None
+        adapters = self._adapters
+        for idx in range(n):
+            if not seen[idx]:
+                continue
+            match = adapters[idx].match_to(sequence)
+            if match is None:
+                continue
+            if (
+                best_match is None
+                or match.score > best_match.score
+                or (
+                    match.score == best_match.score
+                    and match.errors < best_match.errors
+                )
+            ):
+                best_match = match
+        return best_match
+
+
 def warn_duplicate_adapters(adapters):
     d = dict()
     for adapter in adapters:

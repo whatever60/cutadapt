@@ -22,6 +22,9 @@ from .adapters import (
     remainder,
     Adapter,
     AdapterIndex,
+    SeedMultiAdapterFilter,
+    FrontAdapter,
+    BackAdapter,
 )
 from .tokenizer import tokenize_braces, TokenizeError, Token, BraceToken
 from .info import ModificationInfo
@@ -125,47 +128,74 @@ class AdapterCutter(SingleEndModifier):
         )
 
     def _regroup_into_indexed_adapters(self, adapters):
-        prefix, suffix, single = self._split_adapters(adapters)
-        if len(prefix) > 1 or len(suffix) > 1:
-            result = single
-            if len(prefix) > 1:
-                result.append(IndexedPrefixAdapters(prefix))
-            else:
-                result.extend(prefix)
-            if len(suffix) > 1:
-                result.append(IndexedSuffixAdapters(suffix))
-            else:
-                result.extend(suffix)
-            return result
-        else:
+        prefix, suffix, seed_front, seed_back, single = self._split_adapters(adapters)
+        needs_regroup = (
+            len(prefix) > 1
+            or len(suffix) > 1
+            or len(seed_front) > 1
+            or len(seed_back) > 1
+        )
+        if not needs_regroup:
             # For somewhat better backwards compatibility, avoid re-ordering
             # the adapters when we don’t need to
             return adapters
+        result = list(single)
+        if len(prefix) > 1:
+            result.append(IndexedPrefixAdapters(prefix))
+        else:
+            result.extend(prefix)
+        if len(suffix) > 1:
+            result.append(IndexedSuffixAdapters(suffix))
+        else:
+            result.extend(suffix)
+        if len(seed_front) > 1:
+            result.append(SeedMultiAdapterFilter(seed_front))
+        else:
+            result.extend(seed_front)
+        if len(seed_back) > 1:
+            result.append(SeedMultiAdapterFilter(seed_back))
+        else:
+            result.extend(seed_back)
+        return result
 
     @staticmethod
     def _split_adapters(
         adapters: Sequence[SingleAdapter],
     ) -> Tuple[
-        Sequence[SingleAdapter], Sequence[SingleAdapter], Sequence[SingleAdapter]
+        Sequence[SingleAdapter],
+        Sequence[SingleAdapter],
+        Sequence[SingleAdapter],
+        Sequence[SingleAdapter],
+        Sequence[SingleAdapter],
     ]:
         """
-        Split adapters into three different categories so that they can possibly be used
-        with a MultiAdapter. Return a tuple (prefix, suffix, other), where
-        - prefix is a list of all anchored 5' adapters that MultiAdapter would accept
-        - suffix is a list of all anchored 3' adapters that MultiAdapter would accept
-        - other is a list of all remaining adapters.
+        Split adapters into five categories so that they can each be wrapped in
+        a batched matcher where possible. Returns
+        ``(prefix, suffix, seed_front, seed_back, other)``:
+        - ``prefix``: anchored 5' adapters eligible for ``AdapterIndex``
+        - ``suffix``: anchored 3' adapters eligible for ``AdapterIndex``
+        - ``seed_front``: non-anchored 5' adapters eligible for the seed index
+        - ``seed_back``: non-anchored 3' adapters eligible for the seed index
+        - ``other``: everything else (runs individually via ``MultipleAdapters``)
         """
         prefix: List[SingleAdapter] = []
         suffix: List[SingleAdapter] = []
+        seed_front: List[SingleAdapter] = []
+        seed_back: List[SingleAdapter] = []
         other: List[SingleAdapter] = []
         for a in adapters:
             if AdapterIndex.is_acceptable(a, prefix=True):
                 prefix.append(a)
             elif AdapterIndex.is_acceptable(a, prefix=False):
                 suffix.append(a)
+            elif SeedMultiAdapterFilter.is_acceptable(a):
+                if isinstance(a, FrontAdapter):
+                    seed_front.append(a)
+                else:
+                    seed_back.append(a)
             else:
                 other.append(a)
-        return prefix, suffix, other
+        return prefix, suffix, seed_front, seed_back, other
 
     @staticmethod
     def trim_but_retain_adapter(read, matches: Sequence[Match]):
