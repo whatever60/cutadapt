@@ -18,7 +18,6 @@ from .adapters import (
     SingleAdapter,
     IndexedPrefixAdapters,
     IndexedSuffixAdapters,
-    NPrefixIndexedAdapters,
     Match,
     remainder,
     Adapter,
@@ -26,13 +25,7 @@ from .adapters import (
     SeedMultiAdapterFilter,
     FrontAdapter,
     BackAdapter,
-    PrefixAdapter,
-    _count_leading_ns,
 )
-
-
-def _can_use_n_prefix_index(adapter):
-    return NPrefixIndexedAdapters.is_acceptable(adapter)
 from .tokenizer import tokenize_braces, TokenizeError, Token, BraceToken
 from .info import ModificationInfo
 
@@ -135,16 +128,9 @@ class AdapterCutter(SingleEndModifier):
         )
 
     def _regroup_into_indexed_adapters(self, adapters):
-        (
-            prefix_by_nprefix,
-            suffix,
-            seed_front,
-            seed_back,
-            single,
-        ) = self._split_adapters(adapters)
-        prefix_total = sum(len(v) for v in prefix_by_nprefix.values())
+        prefix, suffix, seed_front, seed_back, single = self._split_adapters(adapters)
         needs_regroup = (
-            prefix_total > 1
+            len(prefix) > 1
             or len(suffix) > 1
             or len(seed_front) > 1
             or len(seed_back) > 1
@@ -154,15 +140,10 @@ class AdapterCutter(SingleEndModifier):
             # the adapters when we don't need to
             return adapters
         result = list(single)
-        for n_prefix in sorted(prefix_by_nprefix):
-            group = prefix_by_nprefix[n_prefix]
-            if len(group) > 1:
-                if n_prefix == 0:
-                    result.append(IndexedPrefixAdapters(group))
-                else:
-                    result.append(NPrefixIndexedAdapters(group, n_prefix))
-            else:
-                result.extend(group)
+        if len(prefix) > 1:
+            result.append(IndexedPrefixAdapters(prefix))
+        else:
+            result.extend(prefix)
         if len(suffix) > 1:
             result.append(IndexedSuffixAdapters(suffix))
         else:
@@ -180,34 +161,35 @@ class AdapterCutter(SingleEndModifier):
     @staticmethod
     def _split_adapters(
         adapters: Sequence[SingleAdapter],
-    ):
+    ) -> Tuple[
+        Sequence[SingleAdapter],
+        Sequence[SingleAdapter],
+        Sequence[SingleAdapter],
+        Sequence[SingleAdapter],
+        Sequence[SingleAdapter],
+    ]:
         """
         Split adapters into five categories so that they can each be wrapped in
         a batched matcher where possible. Returns
-        ``(prefix_by_nprefix, suffix, seed_front, seed_back, other)``:
+        ``(prefix, suffix, seed_front, seed_back, other)``:
+        - ``prefix``: anchored 5' adapters eligible for ``AdapterIndex``
+        - ``suffix``: anchored 3' adapters eligible for ``AdapterIndex``
+        - ``seed_front``: non-anchored 5' adapters eligible for the seed index
+        - ``seed_back``: non-anchored 3' adapters eligible for the seed index
+        - ``other``: everything else (runs individually via ``MultipleAdapters``)
 
-        - ``prefix_by_nprefix``: dict mapping ``n_prefix`` (number of leading
-          ``N`` wildcards in the adapter sequence) to anchored 5' adapters.
-          The ``n_prefix == 0`` bucket is the classic
-          ``AdapterIndex``-eligible set; buckets with ``n_prefix > 0`` use
-          ``NPrefixIndexedAdapters``.
-        - ``suffix``: anchored 3' adapters eligible for ``AdapterIndex``.
-        - ``seed_front``: non-anchored 5' adapters eligible for the seed index.
-        - ``seed_back``: non-anchored 3' adapters eligible for the seed index.
-        - ``other``: everything else (runs individually via
-          ``MultipleAdapters``).
+        Note: ``NPrefixIndexedAdapters`` exists in ``adapters.py`` and is a
+        fast path for ``^N{k}<body>`` patterns. It is NOT wired in here by
+        design -- callers who want it must construct it explicitly.
         """
-        prefix_by_nprefix: dict = defaultdict(list)
+        prefix: List[SingleAdapter] = []
         suffix: List[SingleAdapter] = []
         seed_front: List[SingleAdapter] = []
         seed_back: List[SingleAdapter] = []
         other: List[SingleAdapter] = []
         for a in adapters:
             if AdapterIndex.is_acceptable(a, prefix=True):
-                prefix_by_nprefix[0].append(a)
-            elif isinstance(a, PrefixAdapter) and _can_use_n_prefix_index(a):
-                n_prefix = _count_leading_ns(a.sequence)
-                prefix_by_nprefix[n_prefix].append(a)
+                prefix.append(a)
             elif AdapterIndex.is_acceptable(a, prefix=False):
                 suffix.append(a)
             elif SeedMultiAdapterFilter.is_acceptable(a):
@@ -217,7 +199,7 @@ class AdapterCutter(SingleEndModifier):
                     seed_back.append(a)
             else:
                 other.append(a)
-        return prefix_by_nprefix, suffix, seed_front, seed_back, other
+        return prefix, suffix, seed_front, seed_back, other
 
     @staticmethod
     def trim_but_retain_adapter(read, matches: Sequence[Match]):

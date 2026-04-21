@@ -1591,6 +1591,14 @@ class NPrefixIndexedAdapters(Matchable):
       the UMI region that makes the probe start at offset ``k-1`` or
       ``k+1``) are NOT recovered. That matches the semantics of the
       existing ``^N{k}`` DP path which also uses a fixed prefix length.
+
+    **Activation**: this class is intentionally NOT wired into
+    ``AdapterCutter._regroup_into_indexed_adapters``. ``^N{k}<body>``
+    anchored adapters therefore fall through to the standard per-adapter
+    DP path by default, preserving all existing cutadapt semantics without
+    any hidden change in speed vs. correctness tradeoffs. To opt in for a
+    specific pipeline, construct an instance directly and pass it as part
+    of the adapter list to ``MultipleAdapters`` / ``AdapterCutter``.
     """
 
     @classmethod
