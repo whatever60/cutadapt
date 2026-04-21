@@ -19,14 +19,22 @@ except ImportError:
     resource = None  # type: ignore
 
 
-def xopen_rb_raise_limit(path: str):
+def xopen_rb_raise_limit(path: str, threads: int = 0):
     """
     Open a (possibly compressed) file for reading in binary mode, trying to avoid the
     "Too many open files" problem using `open_raise_limit`.
+
+    ``threads`` is forwarded to ``xopen``: 0 means in-process decompression
+    (using python-isal if available); values > 0 spawn an external decompressor
+    (e.g. pigz) which can improve throughput on large gzipped inputs when the
+    reader process would otherwise be CPU-bound.
     """
     mode = "rb"
-    f = open_raise_limit(xopen, path, mode, threads=0)
-    logger.debug("Opening '%s', mode '%s' with xopen resulted in %s", path, mode, f)
+    f = open_raise_limit(xopen, path, mode, threads=threads)
+    logger.debug(
+        "Opening '%s', mode '%s', threads=%d with xopen resulted in %s",
+        path, mode, threads, f,
+    )
     return f
 
 
@@ -119,12 +127,18 @@ class InputFiles:
 
 
 class InputPaths:
-    def __init__(self, *paths: str, interleaved: bool = False):
+    def __init__(
+        self, *paths: str, interleaved: bool = False, input_threads: int = 0
+    ):
         self.paths = paths
         self.interleaved = interleaved
+        self.input_threads = input_threads
 
     def open(self) -> InputFiles:
-        files = [xopen_rb_raise_limit(path) for path in self.paths]
+        files = [
+            xopen_rb_raise_limit(path, threads=self.input_threads)
+            for path in self.paths
+        ]
         return InputFiles(*files, interleaved=self.interleaved)
 
 

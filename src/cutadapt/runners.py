@@ -56,6 +56,7 @@ class ReaderProcess(mpctx_Process):
         queue: multiprocessing.Queue,
         buffer_size: int,
         stdin_fd,
+        input_threads: int = 0,
     ):
         """
         Args:
@@ -83,6 +84,7 @@ class ReaderProcess(mpctx_Process):
         self.queue = queue
         self.buffer_size = buffer_size
         self.stdin_fd = stdin_fd
+        self.input_threads = input_threads
 
     def run(self):
         if self.stdin_fd != -1:
@@ -92,7 +94,9 @@ class ReaderProcess(mpctx_Process):
             with ExitStack() as stack:
                 try:
                     files = [
-                        stack.enter_context(xopen_rb_raise_limit(path))
+                        stack.enter_context(
+                            xopen_rb_raise_limit(path, threads=self.input_threads)
+                        )
                         for path in self._paths
                     ]
                     file_format = detect_file_format(files[0])
@@ -323,6 +327,7 @@ class ParallelPipelineRunner(PipelineRunner):
             queue=self._need_work_queue,
             buffer_size=self._buffer_size,
             stdin_fd=fileno,
+            input_threads=inpaths.input_threads,
         )
         self._reader_process.daemon = True
         self._reader_process.start()

@@ -346,6 +346,12 @@ def get_argument_parser() -> ArgumentParser:
         help="Compression level for compressed output files. Default: %(default)s")
     group.add_argument("-Z", action="store_const", const=1, dest="compression_level",
         help=SUPPRESS)  # deprecated because compression level 1 is now the default
+    group.add_argument("--input-compression-threads", type=int, default=0, metavar="N",
+        help="Number of threads to use for decompressing gzipped/zstd input files. "
+            "0 (default) uses fast in-process decompression (python-isal). "
+            "Values > 0 spawn an external decompressor (pigz/zstd) which can "
+            "raise throughput when the reader process would otherwise be the "
+            "bottleneck (e.g. large inputs, many worker cores).")
     group.add_argument("--info-file", metavar="FILE",
         help="Write information about each read and its adapter matches into FILE. "
             "See the documentation for the file format.")
@@ -539,7 +545,7 @@ def determine_paired(args) -> bool:
 
 
 def make_input_paths(
-    inputs: Sequence[str], paired: bool, interleaved: bool
+    inputs: Sequence[str], paired: bool, interleaved: bool, input_threads: int = 0
 ) -> InputPaths:
     """
     Do some other error checking of the input file names and return InputPaths.
@@ -577,10 +583,15 @@ def make_input_paths(
 
     if input_paired_filename:
         return InputPaths(
-            input_filename, input_paired_filename, interleaved=interleaved
+            input_filename,
+            input_paired_filename,
+            interleaved=interleaved,
+            input_threads=input_threads,
         )
     else:
-        return InputPaths(input_filename, interleaved=interleaved)
+        return InputPaths(
+            input_filename, interleaved=interleaved, input_threads=input_threads
+        )
 
 
 def check_arguments(args, paired: bool) -> None:
@@ -1217,7 +1228,12 @@ def main(cmdlineargs) -> Statistics:
 
     try:
         is_interleaved_input = args.interleaved and len(args.inputs) == 1
-        input_paths = make_input_paths(args.inputs, paired, is_interleaved_input)
+        input_paths = make_input_paths(
+            args.inputs,
+            paired,
+            is_interleaved_input,
+            input_threads=args.input_compression_threads,
+        )
         check_arguments(args, paired)
         adapters, adapters2 = adapters_from_args(args)
         log_adapters(adapters, adapters2 if paired else None)
