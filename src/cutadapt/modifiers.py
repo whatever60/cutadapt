@@ -129,11 +129,12 @@ class AdapterCutter(SingleEndModifier):
 
     def _regroup_into_indexed_adapters(self, adapters):
         prefix, suffix, seed_front, seed_back, single = self._split_adapters(adapters)
+        seed_threshold = SeedMultiAdapterFilter.MIN_GROUP_SIZE
         needs_regroup = (
             len(prefix) > 1
             or len(suffix) > 1
-            or len(seed_front) > 1
-            or len(seed_back) > 1
+            or len(seed_front) >= seed_threshold
+            or len(seed_back) >= seed_threshold
         )
         if not needs_regroup:
             # For somewhat better backwards compatibility, avoid re-ordering
@@ -148,11 +149,11 @@ class AdapterCutter(SingleEndModifier):
             result.append(IndexedSuffixAdapters(suffix))
         else:
             result.extend(suffix)
-        if len(seed_front) > 1:
+        if len(seed_front) >= seed_threshold:
             result.append(SeedMultiAdapterFilter(seed_front))
         else:
             result.extend(seed_front)
-        if len(seed_back) > 1:
+        if len(seed_back) >= seed_threshold:
             result.append(SeedMultiAdapterFilter(seed_back))
         else:
             result.extend(seed_back)

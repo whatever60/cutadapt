@@ -1720,6 +1720,12 @@ class SeedMultiAdapterFilter(Matchable):
 
     MIN_SEED_SIZE = 3
     MAX_SEED_SIZE = 15
+    # Minimum group size for the filter to be worth activating. Below this,
+    # the per-read seed scan overhead (~hundreds of Python-level dict lookups)
+    # can outweigh the savings from skipping individual kmer_finder calls.
+    # Chosen conservatively: small adapter sets (typical 3' trimming,
+    # small linked-adapter panels) keep the original iteration path.
+    MIN_GROUP_SIZE = 8
 
     @classmethod
     def is_acceptable(cls, adapter) -> bool:
