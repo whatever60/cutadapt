@@ -1728,6 +1728,18 @@ class SeedMultiAdapterFilter(Matchable):
     MIN_GROUP_SIZE = 8
 
     @classmethod
+    def _pigeonhole_seed_size(cls, adapter) -> int:
+        """
+        The largest seed size q such that q <= floor(l_min / (k_max + 1)),
+        i.e. the q-gram lemma's upper bound for this adapter. Any seed
+        size <= this value gives no false negatives vs. the non-indexed
+        DP path.
+        """
+        k_max = int(adapter.max_error_rate * len(adapter.sequence))
+        l_min = min(adapter.min_overlap, len(adapter.sequence))
+        return l_min // (k_max + 1)
+
+    @classmethod
     def is_acceptable(cls, adapter) -> bool:
         # Only plain non-anchored 5' / 3' adapters. Anchored (Prefix/Suffix)
         # already have AdapterIndex. Rightmost / NonInternal / force_anywhere
@@ -1740,20 +1752,27 @@ class SeedMultiAdapterFilter(Matchable):
             return False
         if len(adapter.sequence) < cls.MIN_SEED_SIZE:
             return False
+        # Refuse adapters whose pigeonhole-safe seed is smaller than
+        # MIN_SEED_SIZE. Using a seed larger than the safe bound would
+        # violate the q-gram lemma and silently drop valid matches. Such
+        # adapters fall through to MultipleAdapters, which is correct
+        # (just slower). Typical case: very short non-anchored adapters
+        # with a high error rate.
+        if cls._pigeonhole_seed_size(adapter) < cls.MIN_SEED_SIZE:
+            return False
         return True
 
     @classmethod
     def _compute_seed_size(cls, adapters) -> int:
+        # is_acceptable guarantees every adapter has a pigeonhole-safe
+        # seed >= MIN_SEED_SIZE, so the min across the group stays
+        # >= MIN_SEED_SIZE and we do not need a lower clamp here.
         seed = cls.MAX_SEED_SIZE
         for a in adapters:
-            k_max = int(a.max_error_rate * len(a.sequence))
-            l_min = min(a.min_overlap, len(a.sequence))
-            if l_min < cls.MIN_SEED_SIZE:
-                return cls.MIN_SEED_SIZE
-            s = l_min // (k_max + 1)
+            s = cls._pigeonhole_seed_size(a)
             if s < seed:
                 seed = s
-        return max(cls.MIN_SEED_SIZE, min(cls.MAX_SEED_SIZE, seed))
+        return min(cls.MAX_SEED_SIZE, seed)
 
     def __init__(self, adapters: Sequence["SingleAdapter"]):
         super().__init__(name="seed_multi_adapter_filter")
