@@ -1,10 +1,12 @@
-name: publish-folitools
+name: publish
 
 # Publishes the cutadapt-folitools distribution to PyPI / TestPyPI on tags
 # of the form `folitools-v*` (e.g. `folitools-v5.3.1.post0`). The
 # tag-name prefix is intentionally distinct from upstream cutadapt's
 # `v<version>` scheme so this workflow can coexist on the fork without
-# clashing if upstream tags are ever mirrored into the fork.
+# clashing if upstream tags are ever mirrored into the fork. The file is
+# named `publish.yml` to match the PyPI/TestPyPI trusted-publisher
+# registration for `cutadapt-folitools`.
 
 on:
   push:
