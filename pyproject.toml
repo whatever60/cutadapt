@@ -3,11 +3,11 @@ requires = ["setuptools >= 78", "setuptools_scm[toml] >= 6.2", "Cython!=3.2.0,!=
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cutadapt"
+name = "cutadapt-folitools"
 authors = [
     {name = "Marcel Martin", email = "marcel.martin@scilifelab.se"}
 ]
-description = "Adapter trimming and other preprocessing of high-throughput sequencing reads"
+description = "Fork of cutadapt with folitools performance patches (SeedMultiAdapterFilter, pigz input, NPrefixIndexedAdapters). Installs the same `cutadapt` module and CLI as upstream."
 readme = "README.rst"
 license = "MIT"
 classifiers = [
@@ -26,9 +26,10 @@ dependencies = [
 ]
 
 [project.urls]
-"Homepage" = "https://cutadapt.readthedocs.io/"
+"Homepage" = "https://github.com/whatever60/cutadapt/tree/folitools-perf"
+"Upstream" = "https://cutadapt.readthedocs.io/"
 "Changelog" = "https://cutadapt.readthedocs.io/en/stable/changes.html"
-"Repository" = "https://github.com/marcelm/cutadapt/"
+"Repository" = "https://github.com/whatever60/cutadapt/"
 
 [project.scripts]
 cutadapt = "cutadapt.cli:main_cli"
